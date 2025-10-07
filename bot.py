@@ -21,40 +21,8 @@ verification_data = {}
 pending_verifications = {}
 verification_settings = {}
 cooldown_users = {}  # {user_id: cooldown_end_time}
-pending_questions = {}  # {user_id: {'guild_id': guild_id, 'admin_id': admin_id}}
 
 print("📦 Загрузка модулей завершена")
-
-# События бота
-@bot.event
-async def on_connect():
-    print('🔗 Бот подключился к Discord')
-
-@bot.event
-async def on_disconnect():
-    print('🔌 Бот отключился от Discord')
-
-@bot.event
-async def on_ready():
-    print('=' * 50)
-    print(f'✅ БОТ УСПЕШНО ЗАПУЩЕН!')
-    print(f'🤖 Имя: {bot.user.name}')
-    print(f'🆔 ID: {bot.user.id}')
-    print(f'📊 Серверов: {len(bot.guilds)}')
-    print(f'👥 Пользователей: {sum(g.member_count for g in bot.guilds)}')
-    print(f'📅 Время: {datetime.datetime.now()}')
-    print('=' * 50)
-    
-    # Синхронизируем slash-команды
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Синхронизировано {len(synced)} slash-команд")
-    except Exception as e:
-        print(f"❌ Ошибка синхронизации команд: {e}")
-    
-    # Запускаем фоновые задачи
-    cleanup_cooldowns.start()
-    print('🔄 Фоновые задачи запущены')
 
 class ChannelSetupModal(Modal):
     def __init__(self):
@@ -344,17 +312,8 @@ class QuestionModal(Modal):
         user = bot.get_user(self.user_id)
         if user:
             try:
-                await user.send(f"**❓ Дополнительный вопрос от администратора:**\n{self.question.value}\n\n*Пожалуйста, ответьте на этот вопрос в ответном сообщении.*")
-                
-                # Сохраняем информацию о вопросе
-                pending_questions[self.user_id] = {
-                    'guild_id': interaction.guild_id,
-                    'admin_id': interaction.user.id,
-                    'question': self.question.value,
-                    'timestamp': datetime.datetime.now()
-                }
-                
-                await interaction.response.send_message("✅ Вопрос отправлен пользователю! Ожидайте ответа.", ephemeral=True)
+                await user.send(f"**❓ Дополнительный вопрос от администратора:**\n{self.question.value}")
+                await interaction.response.send_message("✅ Вопрос отправлен пользователю!", ephemeral=True)
                 
                 # Логируем действие
                 settings = verification_settings.get(interaction.guild_id)
@@ -669,12 +628,12 @@ class ModerationView(View):
         else:
             await interaction.response.send_message("❌ Пользователь не найден!", ephemeral=True)
 
-# Slash-команды
-@bot.tree.command(name="setup", description="Настройка системы верификации")
+# Команды бота
+@bot.command()
 @commands.has_permissions(administrator=True)
-async def setup_slash(interaction: discord.Interaction):
-    """Slash-команда для настройки верификации"""
-    print(f"⚙️ Запуск настройки сервера {interaction.guild.id} через slash-команду")
+async def setup(ctx):
+    """Настройка системы верификации"""
+    print(f"⚙️ Запуск настройки сервера {ctx.guild.id}")
     embed = discord.Embed(
         title="⚙️ Настройка модулей бота",
         description="Взаимодействуйте с выпадающим меню выбора, чтобы настроить систему верификации.",
@@ -691,12 +650,11 @@ async def setup_slash(interaction: discord.Interaction):
         inline=False
     )
     
-    embed.set_footer(text=f"Запрос от {interaction.user.display_name}")
+    embed.set_footer(text=f"Запрос от {ctx.author.display_name}")
     
     view = SettingsView()
-    await interaction.response.send_message(embed=embed, view=view)
+    await ctx.send(embed=embed, view=view)
 
-# Обработка сообщений
 @bot.event
 async def on_message(message):
     # Игнорируем сообщения от ботов
@@ -704,63 +662,18 @@ async def on_message(message):
         return
         
     # Обработка ответов в ЛС
-    if message.guild is None:
-        print(f"💬 Получено ЛС от пользователя {message.author.id}: {message.content[:50]}...")
+    if message.guild is None and message.author.id in pending_verifications:
+        print(f"💬 Получен ответ от пользователя {message.author.id}")
+        data = pending_verifications[message.author.id]
+        settings = verification_settings.get(data['guild_id'])
         
-        # Обработка ответов на вопросы верификации
-        if message.author.id in pending_verifications:
-            data = pending_verifications[message.author.id]
-            settings = verification_settings.get(data['guild_id'])
+        if settings and data['current_question'] < len(settings['questions']):
+            # Сохраняем ответ
+            pending_verifications[message.author.id]['answers'].append(message.content)
+            pending_verifications[message.author.id]['current_question'] += 1
             
-            if settings and data['current_question'] < len(settings['questions']):
-                # Сохраняем ответ
-                pending_verifications[message.author.id]['answers'].append(message.content)
-                pending_verifications[message.author.id]['current_question'] += 1
-                
-                # Отправляем следующий вопрос
-                await send_next_question(message.author)
-                return
-        
-        # Обработка ответов на дополнительные вопросы от администраторов
-        if message.author.id in pending_questions:
-            question_data = pending_questions[message.author.id]
-            print(f"📩 Получен ответ на дополнительный вопрос от пользователя {message.author.id}")
-            
-            # Отправляем ответ администратору
-            admin_user = bot.get_user(question_data['admin_id'])
-            if admin_user:
-                try:
-                    embed = discord.Embed(
-                        title="📩 Ответ на дополнительный вопрос",
-                        description=f"**Пользователь:** {message.author.mention}\n**Вопрос:** {question_data['question']}\n**Ответ:** {message.content}",
-                        color=0x00ff00,
-                        timestamp=datetime.datetime.now()
-                    )
-                    await admin_user.send(embed=embed)
-                    
-                    # Логируем в канал логов
-                    settings = verification_settings.get(question_data['guild_id'])
-                    if settings:
-                        log_channel = bot.get_channel(settings['log_channel_id'])
-                        if log_channel:
-                            embed_log = discord.Embed(
-                                title="📩 Ответ на дополнительный вопрос",
-                                description=f"**Пользователь:** {message.author.mention}\n**Администратор:** <@{question_data['admin_id']}>\n**Вопрос:** {question_data['question']}\n**Ответ:** {message.content}",
-                                color=0x00ff00,
-                                timestamp=datetime.datetime.now()
-                            )
-                            await log_channel.send(embed=embed_log)
-                    
-                    # Уведомляем пользователя
-                    await message.author.send("✅ Ваш ответ отправлен администратору!")
-                    
-                    # Удаляем из ожидающих ответов
-                    del pending_questions[message.author.id]
-                    print(f"✅ Ответ от пользователя {message.author.id} обработан")
-                    
-                except Exception as e:
-                    print(f"❌ Ошибка при обработке ответа: {e}")
-                    await message.author.send("❌ Произошла ошибка при отправке ответа администратору.")
+            # Отправляем следующий вопрос
+            await send_next_question(message.author)
     
     await bot.process_commands(message)
 
@@ -776,6 +689,30 @@ async def cleanup_cooldowns():
     for user_id in expired_users:
         del cooldown_users[user_id]
         print(f"🧹 Очищен кулдаун для пользователя {user_id}")
+
+# События бота
+@bot.event
+async def on_connect():
+    print('🔗 Бот подключился к Discord')
+
+@bot.event
+async def on_disconnect():
+    print('🔌 Бот отключился от Discord')
+
+@bot.event
+async def on_ready():
+    print('=' * 50)
+    print(f'✅ БОТ УСПЕШНО ЗАПУЩЕН!')
+    print(f'🤖 Имя: {bot.user.name}')
+    print(f'🆔 ID: {bot.user.id}')
+    print(f'📊 Серверов: {len(bot.guilds)}')
+    print(f'👥 Пользователей: {sum(g.member_count for g in bot.guilds)}')
+    print(f'📅 Время: {datetime.datetime.now()}')
+    print('=' * 50)
+    
+    # Запускаем фоновые задачи
+    cleanup_cooldowns.start()
+    print('🔄 Фоновые задачи запущены')
 
 @bot.event
 async def on_command_error(ctx, error):
