@@ -293,48 +293,6 @@ class DenyReasonModal(Modal):
         print(f"❌ Отклонение верификации пользователя {self.user_id} с причиной")
         await handle_verification_deny(interaction, self.user_id, self.reason.value)
 
-class QuestionModal(Modal):
-    def __init__(self, user_id: int):
-        super().__init__(title="Дополнительный вопрос")
-        self.user_id = user_id
-        
-        self.question = TextInput(
-            label="Вопрос пользователю",
-            placeholder="Введите ваш вопрос...",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=1000
-        )
-        self.add_item(self.question)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        print(f"❓ Отправка вопроса пользователю {self.user_id}")
-        user = bot.get_user(self.user_id)
-        if user:
-            try:
-                await user.send(f"**❓ Дополнительный вопрос от администратора:**\n{self.question.value}")
-                await interaction.response.send_message("✅ Вопрос отправлен пользователю!", ephemeral=True)
-                
-                # Логируем действие
-                settings = verification_settings.get(interaction.guild_id)
-                if settings:
-                    log_channel = bot.get_channel(settings['log_channel_id'])
-                    if log_channel:
-                        embed = discord.Embed(
-                            title="📨 Отправлен дополнительный вопрос",
-                            description=f"**Администратор:** {interaction.user.mention}\n**Пользователь:** {user.mention}\n**Вопрос:** {self.question.value}",
-                            color=0xFFA500,
-                            timestamp=datetime.datetime.now()
-                        )
-                        await log_channel.send(embed=embed)
-                        
-            except discord.Forbidden:
-                print(f"❌ Не удалось отправить сообщение пользователю {self.user_id}")
-                await interaction.response.send_message("❌ Не удалось отправить сообщение пользователю!", ephemeral=True)
-        else:
-            print(f"❌ Пользователь {self.user_id} не найден")
-            await interaction.response.send_message("❌ Пользователь не найден!", ephemeral=True)
-
 async def handle_verification_deny(interaction: discord.Interaction, user_id: int, reason: str = None):
     """Обработка отклонения верификации"""
     print(f"🚫 Обработка отклонения верификации для пользователя {user_id}")
@@ -602,11 +560,6 @@ class ModerationView(View):
         modal = DenyReasonModal(self.user_id)
         await interaction.response.send_modal(modal)
     
-    @discord.ui.button(label="Вопрос", style=discord.ButtonStyle.primary, custom_id="verify_question")
-    async def question_button(self, interaction: discord.Interaction, button: Button):
-        print(f"❓ Дополнительный вопрос пользователю {self.user_id}")
-        modal = QuestionModal(self.user_id)
-        await interaction.response.send_modal(modal)
     
     @discord.ui.button(label="Кикнуть", style=discord.ButtonStyle.danger, custom_id="verify_kick")
     async def kick_button(self, interaction: discord.Interaction, button: Button):
